@@ -28,16 +28,35 @@ export default async function handler(req, res) {
   const results = { created: [], skipped: [], errors: [] };
 
   try {
-    // ── Step 1: Load schedule config tasks from Asana ─────────────────────
-    console.log('[scheduler] Loading schedule config from Asana...');
-    const configTasks = await getAllTasks(
-      PROJECTS.schedule_config,
-      'gid,name,notes,due_on,completed,assignee'
-    );
+    // ── Step 1: Load recurring tasks from frequency sections of each project ──
+    console.log('[scheduler] Loading recurring tasks from Asana frequency sections...');
 
-    // Filter to only incomplete tasks (completed = retired)
-    const activeTasks = configTasks.filter(t => !t.completed);
-    console.log(`[scheduler] Found ${activeTasks.length} active schedule items`);
+    // Section GIDs → frequency in days
+    const FREQUENCY_SECTIONS = {
+      // Delta Dawn
+      '1202096817619652': { days: 30,  property: 'delta_dawn',   label: '1 Month'  },
+      '1200748932634519': { days: 90,  property: 'delta_dawn',   label: '3 Months' },
+      '1202800056668861': { days: 180, property: 'delta_dawn',   label: '6 Months' },
+      '1200748932634522': { days: 365, property: 'delta_dawn',   label: '12 Months'},
+      '1202800056668864': { days: 730, property: 'delta_dawn',   label: '24 Months'},
+      // LeGobi
+      '1204093776127180': { days: 30,  property: 'legobi_villa', label: '1 Month'  },
+      '1204093776127181': { days: 60,  property: 'legobi_villa', label: '2 Months' },
+      '1204093776127184': { days: 90,  property: 'legobi_villa', label: '3 Months' },
+      '1204093776127187': { days: 180, property: 'legobi_villa', label: '6 Months' },
+      '1204093776127190': { days: 365, property: 'legobi_villa', label: '12 Months'},
+    };
+
+    // Load all incomplete tasks from every frequency section
+    const activeTasks = [];
+    for (const [sectionGid, meta] of Object.entries(FREQUENCY_SECTIONS)) {
+      const tasks = await getAllTasks(sectionGid, 'gid,name,notes,due_on,completed,memberships.section.gid');
+      const incomplete = tasks.filter(t => !t.completed && t.due_on);
+      for (const t of incomplete) {
+        activeTasks.push({ ...t, _frequencyDays: meta.days, _property: meta.property, _sectionGid: sectionGid });
+      }
+    }
+    console.log(`[scheduler] Found ${activeTasks.length} active recurring tasks`);
 
     // ── Step 2: Load checkout dates for both properties (next 90 days) ────
     const fromDate = today();
@@ -67,25 +86,12 @@ export default async function handler(req, res) {
     // ── Step 4: Process each schedule item ────────────────────────────────
     for (const task of activeTasks) {
       try {
-        const { frequencyDays, property } = parseTaskNotes(task.notes);
+        const frequencyDays = task._frequencyDays;
+        const property      = task._property;
 
-        if (!frequencyDays || !property) {
-          console.warn(`[scheduler] Skipping "${task.name}" — missing FREQUENCY or PROPERTY in notes`);
-          continue;
-        }
-
-        if (!PROJECTS[property]) {
-          console.warn(`[scheduler] Skipping "${task.name}" — unknown property "${property}"`);
-          continue;
-        }
-
-        // last_completed is stored as the task's due_on date
-        // (Ryan/Amanda mark it done and we update due_on — see webhook handler)
+        // last_completed = the due_on date on the current incomplete task
+        // (set by you manually, or by the scheduler from the previous completed task)
         const lastCompleted = task.due_on;
-        if (!lastCompleted) {
-          console.warn(`[scheduler] Skipping "${task.name}" — no due_on (last completed) date set`);
-          continue;
-        }
 
         // When is this task next due?
         const nextDueWindow = addDays(lastCompleted, frequencyDays);
@@ -109,16 +115,15 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // Determine the right section in the maintenance project
-        const sectionKey = frequencyToSection(frequencyDays);
-        const sectionId  = MAINTENANCE_SECTIONS[property][sectionKey];
+        // New task goes back into the same section the template lives in
+        const sectionId  = task._sectionGid;
         const projectId  = PROJECTS[property];
         const assignee   = ASSIGNEES[property];
 
         // Create the task
         const created = await asana('POST', '/tasks', {
           name:        task.name,
-          notes:       task.notes.split('\n\nFREQUENCY:')[0], // strip metadata from notes
+          notes:       task.notes || '',
           due_on:      scheduledDate,
           assignee:    assignee.gid,
           projects:    [projectId],
