@@ -50,7 +50,7 @@ export default async function handler(req, res) {
     // Load all incomplete tasks from every frequency section
     const activeTasks = [];
     for (const [sectionGid, meta] of Object.entries(FREQUENCY_SECTIONS)) {
-      const tasks = await getAllTasks(sectionGid, 'gid,name,notes,due_on,completed,memberships.section.gid');
+      const tasks = await getAllTasks(sectionGid, 'gid,name,notes,due_on,completed,memberships.section.gid', true);
       const incomplete = tasks.filter(t => !t.completed && t.due_on);
       for (const t of incomplete) {
         activeTasks.push({ ...t, _frequencyDays: meta.days, _property: meta.property, _sectionGid: sectionGid });
