@@ -5,11 +5,27 @@
 // Sends SMS via Quo to Ryan/Amanda, email to Jordan if overdue.
 
 import {
-  asana, getAllTasks,
-  PROJECTS, ASSIGNEES, JORDAN_EMAIL,
+  getAllTasks,
+  ASSIGNEES, JORDAN_EMAIL,
   sendEmail, sendSMS,
-  today, addDays, daysBetween, formatDate,
+  today, addDays, formatDate,
 } from '../lib/utils.js';
+
+// All frequency sections across both properties
+const FREQUENCY_SECTIONS = {
+  // Delta Dawn
+  '1202096817619652': 'delta_dawn',
+  '1200748932634519': 'delta_dawn',
+  '1202800056668861': 'delta_dawn',
+  '1200748932634522': 'delta_dawn',
+  '1202800056668864': 'delta_dawn',
+  // LeGobi
+  '1204093776127180': 'legobi_villa',
+  '1204093776127181': 'legobi_villa',
+  '1204093776127187': 'legobi_villa',
+  '1204093776127190': 'legobi_villa',
+  '1216644012125058': 'legobi_villa',
+};
 
 export default async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'POST') {
@@ -21,35 +37,35 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const todayStr    = today();
-  const tomorrowStr = addDays(todayStr, 1);
+  const todayStr     = today();
+  const tomorrowStr  = addDays(todayStr, 1);
   const yesterdayStr = addDays(todayStr, -1);
 
   console.log(`[reminders] Running for ${todayStr}`);
   const sent = { sms: [], emails: [] };
 
-  // Process both properties
-  for (const [propKey, projectId] of Object.entries({
-    delta_dawn:   PROJECTS.delta_dawn,
-    legobi_villa: PROJECTS.legobi_villa,
-  })) {
-    const assignee   = ASSIGNEES[propKey];
-    const propLabel  = propKey === 'delta_dawn' ? 'Delta Dawn' : 'LeGobi Villa';
+  // Load all incomplete tasks from frequency sections, grouped by property
+  const tasksByProperty = { delta_dawn: [], legobi_villa: [] };
 
-    // Load all incomplete tasks for this property
-    const tasks = await getAllTasks(projectId, 'gid,name,due_on,completed,notes');
+  for (const [sectionGid, propKey] of Object.entries(FREQUENCY_SECTIONS)) {
+    const tasks = await getAllTasks(sectionGid, 'gid,name,due_on,completed', true);
     const incomplete = tasks.filter(t => !t.completed && t.due_on);
+    tasksByProperty[propKey].push(...incomplete);
+  }
 
-    // ── Day-before reminders ─────────────────────────────────────────────
-    const dueTomorrow = incomplete.filter(t => t.due_on === tomorrowStr);
+  // Process each property
+  for (const [propKey, tasks] of Object.entries(tasksByProperty)) {
+    const assignee  = ASSIGNEES[propKey];
+    const propLabel = propKey === 'delta_dawn' ? 'Delta Dawn' : 'LeGobi Villa';
 
+    // ── Day-before reminders ───────────────────────────────────────────────
+    const dueTomorrow = tasks.filter(t => t.due_on === tomorrowStr);
     for (const task of dueTomorrow) {
       const message = `Hey ${assignee.name}! Heads up — "${task.name}" at ${propLabel} is due tomorrow (${formatDate(tomorrowStr)}). Just a reminder to get it done during the turnover. Thanks!`;
-
       try {
         if (assignee.phone) {
           await sendSMS({ to: assignee.phone, message });
-          console.log(`[reminders] 📱 SMS sent to ${assignee.name} for "${task.name}" (day before)`);
+          console.log(`[reminders] 📱 SMS to ${assignee.name} — "${task.name}" (day before)`);
           sent.sms.push({ to: assignee.name, task: task.name, type: 'day_before' });
         }
       } catch (err) {
@@ -57,31 +73,28 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── Day-after alerts (still incomplete) ──────────────────────────────
-    const overdueYesterday = incomplete.filter(t => t.due_on === yesterdayStr);
-
+    // ── Day-after alerts (still incomplete) ───────────────────────────────
+    const overdueYesterday = tasks.filter(t => t.due_on === yesterdayStr);
     for (const task of overdueYesterday) {
       const assigneeMsg = `Hey ${assignee.name} — "${task.name}" at ${propLabel} was due yesterday and isn't marked complete yet. Can you let Jordan know if it's done or if there's an issue? Thanks`;
       const jordanMsg   = `⚠️ Maintenance overdue at ${propLabel}: "${task.name}" was due ${formatDate(yesterdayStr)} and isn't marked complete in Asana. ${assignee.name} has been texted.`;
 
-      // Text the assignee
       try {
         if (assignee.phone) {
           await sendSMS({ to: assignee.phone, message: assigneeMsg });
-          console.log(`[reminders] 📱 SMS sent to ${assignee.name} for overdue "${task.name}"`);
+          console.log(`[reminders] 📱 SMS to ${assignee.name} — overdue "${task.name}"`);
           sent.sms.push({ to: assignee.name, task: task.name, type: 'day_after_assignee' });
         }
       } catch (err) {
         console.error(`[reminders] Assignee SMS failed:`, err.message);
       }
 
-      // Email Jordan
       try {
         await sendEmail({
           to:      JORDAN_EMAIL,
           subject: `⚠️ Overdue maintenance: ${task.name} — ${propLabel}`,
           text:    jordanMsg,
-          html:    `
+          html: `
             <div style="font-family: sans-serif; max-width: 600px;">
               <h2 style="color: #c0392b;">⚠️ Overdue Maintenance Task</h2>
               <table style="border-collapse: collapse; width: 100%;">
@@ -95,7 +108,7 @@ export default async function handler(req, res) {
             </div>
           `,
         });
-        console.log(`[reminders] 📧 Email sent to Jordan for overdue "${task.name}"`);
+        console.log(`[reminders] 📧 Email to Jordan — overdue "${task.name}"`);
         sent.emails.push({ task: task.name, property: propKey, type: 'overdue_alert' });
       } catch (err) {
         console.error(`[reminders] Jordan email failed:`, err.message);

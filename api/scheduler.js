@@ -42,9 +42,9 @@ export default async function handler(req, res) {
       // LeGobi
       '1204093776127180': { days: 30,  property: 'legobi_villa', label: '1 Month'  },
       '1204093776127181': { days: 60,  property: 'legobi_villa', label: '2 Months' },
-      '1204093776127184': { days: 90,  property: 'legobi_villa', label: '3 Months' },
       '1204093776127187': { days: 180, property: 'legobi_villa', label: '6 Months' },
       '1204093776127190': { days: 365, property: 'legobi_villa', label: '12 Months'},
+      '1216644012125058': { days: 730, property: 'legobi_villa', label: '24 Months'},
     };
 
     // Load all incomplete tasks from every frequency section
